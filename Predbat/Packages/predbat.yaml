@@ -1,145 +1,394 @@
 ###############################################################################
-## PACKAGE: Predbat Energy Today Sensors
-##
-## Creates daily kWh sensors for Predbat from Huawei power sensors.
-##
-## Source sensors that must already exist:
-##   sensor.house_load_power_calc
-##   sensor.power_meter_active_power
-##   sensor.go_echarger_265216_wh
-##
-## Created sensors:
-##   sensor.predbat_house_load_power
-##   sensor.predbat_grid_import_power
-##   sensor.predbat_grid_export_power
-##   sensor.predbat_grid_power
-##   sensor.go_echarger_265216_kwh
-##
-##   sensor.predbat_load_energy
-##   sensor.predbat_import_energy
-##   sensor.predbat_export_energy
-##
-##   sensor.predbat_load_today
-##   sensor.predbat_import_today
-##   sensor.predbat_export_today
+# PACKAGE: Predbat Energy Sensors
+#
+# PURPOSE
+# -------
+# Creates power and daily energy sensors for Predbat using Huawei power
+# sensors and a go-eCharger energy sensor.
+#
+#
+# REQUIRED SOURCE ENTITIES
+# ------------------------
+# sensor.inverter_input_power
+#   Current PV production in watts.
+#
+# sensor.power_meter_active_power
+#   Current grid power in watts.
+#
+#   Expected sign convention:
+#     Positive value = export to grid
+#     Negative value = import from grid
+#
+# sensor.batteries_charge_discharge_power
+#   Current battery charge/discharge power in watts.
+#
+# sensor.go_echarger_265216_wh
+#   Total EV charger energy in watt-hours.
+#
+# binary_sensor.predbat_car_charging_slot
+#   Predbat charging-slot sensor.
+#
+#
+# CREATED ENTITIES
+# ----------------
+# sensor.predbat_house_load_power
+# sensor.predbat_self_sufficiency_now
+# sensor.predbat_grid_import_power
+# sensor.predbat_grid_export_power
+# sensor.predbat_grid_power
+# sensor.go_echarger_265216_kwh
+# sensor.predbat_car_charging_times
+#
+# sensor.predbat_load_energy
+# sensor.predbat_import_energy
+# sensor.predbat_export_energy
+#
+# sensor.predbat_load_today
+# sensor.predbat_import_today
+# sensor.predbat_export_today
+#
+# input_number.predbat_ev_soc
+#
+#
+# INSTALLATION
+# ------------
+# Save this file as, for example:
+#
+#   /config/packages/predbat_energy.yaml
+#
+# Packages must be enabled in configuration.yaml:
+#
+# homeassistant:
+#   packages: !include_dir_named packages
+###############################################################################
+
+
+###############################################################################
+# TEMPLATE SENSORS
 ###############################################################################
 
 template:
+
+  ###########################################################################
+  # Power sensors
+  ###########################################################################
+
   - sensor:
-      - name: "Predbat House load power"
+
+      # Estimated house consumption.
+      #
+      # Formula:
+      #   house load = PV production - grid power - battery power
+      #
+      # The result is limited to zero to avoid small negative values caused
+      # by timing differences between the source sensors.
+      - name: "Predbat House Load Power"
         unique_id: predbat_house_load_power
         unit_of_measurement: "W"
         device_class: power
         state_class: measurement
-        state: >
-          {% set pv_w   = states('sensor.inverter_input_power') | float(0) %}
-          {% set grid_w = states('sensor.power_meter_active_power') | float(0) %}
-          {% set batt_w = states('sensor.batteries_charge_discharge_power') | float(0) %}
-          {{ ([pv_w - grid_w - batt_w, 0] | max) | round(0) }}
+        icon: mdi:home-lightning-bolt
 
-      - name: "predbat self-sufficiency now"
+        availability: >
+          {{
+            states('sensor.inverter_input_power') | is_number
+            and states('sensor.power_meter_active_power') | is_number
+            and states('sensor.batteries_charge_discharge_power') | is_number
+          }}
+
+        state: >
+          {% set pv_w =
+            states('sensor.inverter_input_power') | float(0)
+          %}
+          {% set grid_w =
+            states('sensor.power_meter_active_power') | float(0)
+          %}
+          {% set battery_w =
+            states('sensor.batteries_charge_discharge_power') | float(0)
+          %}
+
+          {% set house_load_w = pv_w - grid_w - battery_w %}
+
+          {{ [house_load_w, 0] | max | round(0) }}
+
+
+      # Current self-sufficiency percentage.
+      #
+      # Examples:
+      #   100% = no grid import
+      #    50% = half of the house load is imported
+      #     0% = all house load is imported
+      - name: "Predbat Self-Sufficiency Now"
         unique_id: predbat_self_sufficiency_now
         unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:home-percent
+
+        availability: >
+          {{
+            states('sensor.predbat_house_load_power') | is_number
+            and states('sensor.power_meter_active_power') | is_number
+          }}
+
         state: >
-          {% set load_w = states('sensor.predbat_house_load_power') | float(0) %}
-          {% set grid_w = states('sensor.power_meter_active_power') | float(0) %}
-          {% set imp_w  = ([-grid_w, 0] | max) %}
+          {% set load_w =
+            states('sensor.predbat_house_load_power') | float(0)
+          %}
+          {% set grid_w =
+            states('sensor.power_meter_active_power') | float(0)
+          %}
+
+          {% set import_w = [-grid_w, 0] | max %}
+
           {% if load_w > 0 %}
-            {{ ((1 - [imp_w / load_w, 1] | min) * 100) | round(0) }}
+            {% set imported_fraction = [import_w / load_w, 1] | min %}
+            {{ ((1 - imported_fraction) * 100) | round(0) }}
           {% else %}
             0
           {% endif %}
 
-      - name: "Predbat grid import power"
+
+      # Grid import represented as a positive value.
+      #
+      # Example:
+      #   Huawei source: -2500 W
+      #   Result:         2500 W
+      - name: "Predbat Grid Import Power"
         unique_id: predbat_grid_import_power
         unit_of_measurement: "W"
         device_class: power
         state_class: measurement
         icon: mdi:transmission-tower-import
+
         availability: >
           {{ states('sensor.power_meter_active_power') | is_number }}
-        state: >
-          {% set p = states('sensor.power_meter_active_power') | float %}
-          {{ [(p * -1), 0] | max | round(0) }}
 
-      - name: "Predbat grid export power"
+        state: >
+          {% set grid_w =
+            states('sensor.power_meter_active_power') | float(0)
+          %}
+
+          {{ [-grid_w, 0] | max | round(0) }}
+
+
+      # Grid export represented as a positive value.
+      #
+      # Example:
+      #   Huawei source: 1800 W
+      #   Result:        1800 W
+      - name: "Predbat Grid Export Power"
         unique_id: predbat_grid_export_power
         unit_of_measurement: "W"
         device_class: power
         state_class: measurement
         icon: mdi:transmission-tower-export
+
         availability: >
           {{ states('sensor.power_meter_active_power') | is_number }}
-        state: >
-          {% set p = states('sensor.power_meter_active_power') | float %}
-          {{ [p, 0] | max | round(0) }}
 
+        state: >
+          {% set grid_w =
+            states('sensor.power_meter_active_power') | float(0)
+          %}
+
+          {{ [grid_w, 0] | max | round(0) }}
+
+
+      # Bidirectional grid power for Predbat.
+      #
+      # Sign convention:
+      #   Positive value = import from grid
+      #   Negative value = export to grid
+      - name: "Predbat Grid Power"
+        unique_id: predbat_grid_power
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        icon: mdi:transmission-tower
+
+        availability: >
+          {{ states('sensor.power_meter_active_power') | is_number }}
+
+        state: >
+          {% set grid_w =
+            states('sensor.power_meter_active_power') | float(0)
+          %}
+
+          {{ (-grid_w) | round(0) }}
+
+
+  ###########################################################################
+  # EV charger energy conversion
+  ###########################################################################
+
+  - sensor:
+
+      # Converts the go-eCharger total energy from Wh to kWh.
+      #
+      # Example:
+      #   12500 Wh becomes 12.500 kWh.
       - name: "go-eCharger 265216 kWh"
         unique_id: go_echarger_265216_kwh
         unit_of_measurement: "kWh"
         device_class: energy
         state_class: total_increasing
         icon: mdi:ev-station
+
         availability: >
           {{ states('sensor.go_echarger_265216_wh') | is_number }}
-        state: >
-          {{ (states('sensor.go_echarger_265216_wh') | float / 1000) | round(3) }}
 
-      - name: "Predbat grid power"
-        unique_id: predbat_grid_power
-        unit_of_measurement: "W"
-        device_class: power
-        state_class: measurement
-        icon: mdi:transmission-tower
-        availability: >
-          {{ states('sensor.power_meter_active_power') | is_number }}
         state: >
-          {{ (states('sensor.power_meter_active_power') | float * -1) | round(0) }}
+          {% set energy_wh =
+            states('sensor.go_echarger_265216_wh') | float(0)
+          %}
+
+          {{ (energy_wh / 1000) | round(3) }}
+
+
+  ###########################################################################
+  # Predbat EV charging schedule
+  ###########################################################################
+
+  - sensor:
+
+      # Converts Predbat's planned charging periods into a simplified list.
+      #
+      # The sensor state is the latest template update time.
+      # The charging periods are stored in the planned_times attribute.
+      - name: "Predbat Car Charging Times"
+        unique_id: predbat_car_charging_times
+        icon: mdi:car-clock
+
+        availability: >
+          {{
+            states('binary_sensor.predbat_car_charging_slot')
+            not in ['unknown', 'unavailable']
+          }}
+
+        state: >
+          {{ now().isoformat() }}
+
+        attributes:
+          planned_times: >
+            {% set planned =
+              state_attr(
+                'binary_sensor.predbat_car_charging_slot',
+                'planned'
+              ) | default([], true)
+            %}
+
+            {% set current_year = now().year %}
+            {% set result = namespace(items=[]) %}
+
+            {% for period in planned %}
+              {% if period.start is defined %}
+                {% set parsed_start =
+                  strptime(
+                    period.start,
+                    '%m-%d %H:%M:%S',
+                    none
+                  )
+                %}
+
+                {% if parsed_start is not none %}
+                  {% set start =
+                    parsed_start.replace(year=current_year)
+                  %}
+
+                  {% set result.items =
+                    result.items + [
+                      {
+                        'start': start | string
+                      }
+                    ]
+                  %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+
+            {{ result.items }}
+
+
+###############################################################################
+# POWER TO ENERGY CONVERSION
+#
+# These sensors integrate power over time:
+#
+#   W -> kWh
+#
+# These are cumulative energy sensors and do not reset at midnight.
+###############################################################################
 
 sensor:
+
+  # Total calculated house-load energy.
   - platform: integration
     source: sensor.predbat_house_load_power
-    name: predbat_load_energy
+    name: "Predbat Load Energy"
     unique_id: predbat_load_energy
     unit_prefix: k
     unit_time: h
     round: 4
     method: left
 
+
+  # Total imported grid energy.
   - platform: integration
     source: sensor.predbat_grid_import_power
-    name: predbat_import_energy
+    name: "Predbat Import Energy"
     unique_id: predbat_import_energy
     unit_prefix: k
     unit_time: h
     round: 4
     method: left
 
+
+  # Total exported grid energy.
   - platform: integration
     source: sensor.predbat_grid_export_power
-    name: predbat_export_energy
+    name: "Predbat Export Energy"
     unique_id: predbat_export_energy
     unit_prefix: k
     unit_time: h
     round: 4
     method: left
 
+
+###############################################################################
+# DAILY ENERGY METERS
+#
+# These sensors reset every day at midnight.
+###############################################################################
+
 utility_meter:
+
   predbat_load_today:
+    name: "Predbat Load Today"
     source: sensor.predbat_load_energy
     cycle: daily
 
+
   predbat_import_today:
+    name: "Predbat Import Today"
     source: sensor.predbat_import_energy
     cycle: daily
 
+
   predbat_export_today:
+    name: "Predbat Export Today"
     source: sensor.predbat_export_energy
     cycle: daily
 
+
+###############################################################################
+# PREDBAT EV SETTINGS
+###############################################################################
+
 input_number:
+
+  # Desired EV state of charge used by Predbat.
   predbat_ev_soc:
-    name: "Predbat EV target SOC"
+    name: "Predbat EV Target SOC"
     min: 0
     max: 100
     step: 1
