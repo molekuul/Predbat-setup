@@ -1,179 +1,434 @@
 ###############################################################################
-#       -----------------------------------------------------                 #
-#       HUAWEI SOLAR DATA - Power, Energy and Economy Sensors                 #
-#       -----------------------------------------------------                 #
-#                                                                             #
-# This is a package file with the sensors included in Huawei Solar by Johan71 #
+# PACKAGE: Energy Overview Sensors
+#
+# PURPOSE
+# -------
+# Creates user-friendly sensors for:
+#
+#   - Current PV production
+#   - Calculated house consumption
+#   - Current PV coverage
+#   - Current self-sufficiency
+#   - Grid import and export status
+#   - Battery operating status
+#   - Calculated PV energy
+#   - Filtered grid import
+#   - 48-hour average grid import
+#
+#
+# REQUIRED SOURCE ENTITIES
+# ------------------------
+# sensor.inverter_input_power
+#   Current PV production in watts.
+#
+# sensor.power_meter_active_power
+#   Current grid power in watts.
+#
+#   Expected sign convention:
+#     Positive value = export to grid
+#     Negative value = import from grid
+#
+# sensor.batteries_charge_discharge_power
+#   Current battery power in watts.
+#
+#   Expected sign convention:
+#     Positive value = battery charging
+#     Negative value = battery discharging
+#
+# sensor.fsp_ne_134532921_daily_energy
+#   Daily PV energy in kWh.
+#
+#
+# CREATED ENTITIES
+# ----------------
+# sensor.pv_input_power
+# sensor.house_load_power_calc
+# sensor.pv_cover_now
+# sensor.self_sufficiency_now
+# sensor.grid_net_power
+# sensor.energy_mode
+# sensor.pv_energy_calc
+# sensor.filtered_grid_import_power
+# sensor.pv_energy_raw
+# sensor.48h_average_grid_import_power
+#
+#
+# INSTALLATION
+# ------------
+# Save this file as:
+#
+#   /config/packages/energy_overview.yaml
+#
+# Packages must be enabled in configuration.yaml:
+#
+# homeassistant:
+#   packages: !include_dir_named packages
 ###############################################################################
+
+
+###############################################################################
+# TEMPLATE SENSORS
+###############################################################################
+
+template:
+  - sensor:
+
+      #########################################################################
+      # PV POWER
+      #########################################################################
+
+      # Current PV production copied from the inverter input-power sensor.
+      #
+      # This provides a stable and clearly named entity for dashboards and
+      # calculations.
+      - name: "PV Input Power"
+        unique_id: pv_input_power
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        icon: mdi:solar-power
+
+        availability: >
+          {{ states('sensor.inverter_input_power') | is_number }}
+
+        state: >
+          {% set pv_w =
+            states('sensor.inverter_input_power') | float(0)
+          %}
+          {{ pv_w | round(0) }}
+
+
+      #########################################################################
+      # HOUSE LOAD
+      #########################################################################
+
+      # Estimated house consumption.
+      #
+      # Formula:
+      #
+      #   house load = PV production - grid power - battery power
+      #
+      # The result is limited to zero to avoid small negative values caused by
+      # timing differences between the source sensors.
+      - name: "House Load Power (Calc)"
+        unique_id: house_load_power_calc
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        icon: mdi:home-lightning-bolt
+
+        availability: >
+          {{
+            states('sensor.pv_input_power') | is_number
+            and states('sensor.power_meter_active_power') | is_number
+            and states('sensor.batteries_charge_discharge_power') | is_number
+          }}
+
+        state: >
+          {% set pv_w =
+            states('sensor.pv_input_power') | float(0)
+          %}
+          {% set grid_w =
+            states('sensor.power_meter_active_power') | float(0)
+          %}
+          {% set battery_w =
+            states('sensor.batteries_charge_discharge_power') | float(0)
+          %}
+
+          {% set house_load_w = pv_w - grid_w - battery_w %}
+
+          {{ [house_load_w, 0] | max | round(0) }}
+
+
+      #########################################################################
+      # PV COVERAGE
+      #########################################################################
+
+      # Percentage of the current house load that could be covered by the
+      # current PV production.
+      #
+      # The value is limited to 100%.
+      #
+      # Examples:
+      #   100% = PV production equals or exceeds the house load
+      #    50% = PV production equals half of the house load
+      #     0% = no PV production
+      - name: "PV Cover Now"
+        unique_id: pv_cover_now
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:solar-power-variant
+
+        availability: >
+          {{
+            states('sensor.house_load_power_calc') | is_number
+            and states('sensor.pv_input_power') | is_number
+          }}
+
+        state: >
+          {% set load_w =
+            states('sensor.house_load_power_calc') | float(0)
+          %}
+          {% set pv_w =
+            states('sensor.pv_input_power') | float(0)
+          %}
+
+          {% if load_w > 0 %}
+            {% set pv_fraction = [pv_w / load_w, 1] | min %}
+            {{ (pv_fraction * 100) | round(0) }}
+          {% else %}
+            0
+          {% endif %}
+
+
+      #########################################################################
+      # SELF-SUFFICIENCY
+      #########################################################################
+
+      # Percentage of the current house load supplied without importing power
+      # from the grid.
+      #
+      # This includes energy supplied by both PV and battery discharge.
+      #
+      # Examples:
+      #   100% = no grid import
+      #    50% = half of the house load is imported
+      #     0% = all house load is imported
+      - name: "Self-Sufficiency Now"
+        unique_id: self_sufficiency_now
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:home-percent
+
+        availability: >
+          {{
+            states('sensor.house_load_power_calc') | is_number
+            and states('sensor.power_meter_active_power') | is_number
+          }}
+
+        state: >
+          {% set load_w =
+            states('sensor.house_load_power_calc') | float(0)
+          %}
+          {% set grid_w =
+            states('sensor.power_meter_active_power') | float(0)
+          %}
+
+          {% set import_w = [-grid_w, 0] | max %}
+
+          {% if load_w > 0 %}
+            {% set imported_fraction = [import_w / load_w, 1] | min %}
+            {{ ((1 - imported_fraction) * 100) | round(0) }}
+          {% else %}
+            0
+          {% endif %}
+
+
+      #########################################################################
+      # GRID POWER
+      #########################################################################
+
+      # Raw bidirectional grid power.
+      #
+      # Sign convention:
+      #   Positive value = export to grid
+      #   Negative value = import from grid
+      - name: "Grid Net Power"
+        unique_id: grid_net_power
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        icon: mdi:transmission-tower
+
+        availability: >
+          {{ states('sensor.power_meter_active_power') | is_number }}
+
+        state: >
+          {% set grid_w =
+            states('sensor.power_meter_active_power') | float(0)
+          %}
+          {{ grid_w | round(0) }}
+
+
+      #########################################################################
+      # ENERGY MODE
+      #########################################################################
+
+      # Human-readable description of the current energy flow.
+      #
+      # Thresholds prevent the status from changing because of small sensor
+      # variations around zero.
+      - name: "Energy Mode"
+        unique_id: energy_mode
+        icon: mdi:home-lightning-bolt-outline
+
+        availability: >
+          {{
+            states('sensor.pv_input_power') | is_number
+            and states('sensor.power_meter_active_power') | is_number
+            and states('sensor.batteries_charge_discharge_power') | is_number
+          }}
+
+        state: >
+          {% set pv_w =
+            states('sensor.pv_input_power') | float(0)
+          %}
+          {% set grid_w =
+            states('sensor.power_meter_active_power') | float(0)
+          %}
+          {% set battery_w =
+            states('sensor.batteries_charge_discharge_power') | float(0)
+          %}
+
+          {% set battery_charge_w = [battery_w, 0] | max %}
+          {% set battery_discharge_w = [-battery_w, 0] | max %}
+          {% set export_w = [grid_w, 0] | max %}
+          {% set import_w = [-grid_w, 0] | max %}
+
+          {% set grid_threshold_w = 80 %}
+          {% set battery_threshold_w = 80 %}
+          {% set pv_threshold_w = 80 %}
+
+          {% if export_w > grid_threshold_w %}
+            {% if battery_charge_w > battery_threshold_w %}
+              🌞📤🔋 Exporting + battery charging
+            {% elif battery_discharge_w > battery_threshold_w %}
+              🌞📤🔋 Exporting + battery discharging
+            {% else %}
+              🌞📤 Exporting
+            {% endif %}
+
+          {% elif import_w > grid_threshold_w %}
+            {% if battery_charge_w > battery_threshold_w %}
+              🌙📥🔋 Importing + battery charging
+            {% elif battery_discharge_w > battery_threshold_w %}
+              🌙📥🔋 Importing + battery discharging
+            {% else %}
+              🌙📥 Importing
+            {% endif %}
+
+          {% else %}
+            {% if battery_charge_w > battery_threshold_w %}
+              🔋⬆️ Battery charging
+            {% elif battery_discharge_w > battery_threshold_w %}
+              🔋⬇️ Battery discharging
+            {% elif pv_w > pv_threshold_w %}
+              🌤️ PV running the home
+            {% else %}
+              😴 Quiet moment
+            {% endif %}
+          {% endif %}
+
+
+      #########################################################################
+      # DAILY PV ENERGY
+      #########################################################################
+
+      # Copies the inverter's daily PV energy sensor to a clearly named entity.
+      #
+      # The source is expected to contain kWh and reset when a new day starts.
+      - name: "PV Energy (Calc)"
+        unique_id: pv_energy_calc
+        unit_of_measurement: "kWh"
+        device_class: energy
+        state_class: total_increasing
+        icon: mdi:solar-power-variant
+
+        availability: >
+          {{
+            states('sensor.fsp_ne_134532921_daily_energy')
+            | is_number
+          }}
+
+        state: >
+          {% set pv_energy_kwh =
+            states('sensor.fsp_ne_134532921_daily_energy') | float(0)
+          %}
+          {{ pv_energy_kwh | round(3) }}
+
+
+      #########################################################################
+      # FILTERED GRID IMPORT
+      #########################################################################
+
+      # Grid import used for long-term statistics.
+      #
+      # The value is updated only while battery power is below 400 W.
+      # When battery activity exceeds that threshold, the previous sensor value
+      # is retained.
+      #
+      # This prevents battery charging and discharging periods from heavily
+      # affecting the calculated average grid-import value.
+      - name: "Filtered Grid Import Power"
+        unique_id: filtered_grid_import_power
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        icon: mdi:transmission-tower-import
+
+        availability: >
+          {{
+            states('sensor.batteries_charge_discharge_power') | is_number
+            and states('sensor.power_meter_active_power') | is_number
+          }}
+
+        state: >
+          {% set battery_power_w =
+            states('sensor.batteries_charge_discharge_power') | float(0)
+          %}
+          {% set grid_power_w =
+            states('sensor.power_meter_active_power') | float(0)
+          %}
+          {% set previous_value_w =
+            this.state | float(0)
+          %}
+
+          {% set battery_filter_threshold_w = 400 %}
+
+          {% if battery_power_w | abs < battery_filter_threshold_w %}
+            {{ [-grid_power_w, 0] | max | round(0) }}
+          {% else %}
+            {{ previous_value_w | round(0) }}
+          {% endif %}
+
+
+###############################################################################
+# PLATFORM SENSORS
+###############################################################################
+
 sensor:
+
+  ###########################################################################
+  # PV POWER TO ENERGY
+  ###########################################################################
+
+  # Integrates PV power over time:
+  #
+  #   W -> kWh
+  #
+  # This is a cumulative energy sensor and does not reset at midnight.
   - platform: integration
-    source: sensor.input_power_with_efficiency_loss
-    name: solar_energy_riemann
-    round: 3
+    source: sensor.pv_input_power
+    name: "PV Energy Raw"
+    unique_id: pv_energy_raw
     unit_prefix: k
     unit_time: h
+    round: 3
     method: left
 
-  - platform: template
-    sensors:
-      battery_charge_only:
-        friendly_name: "Battery Charge Only"
-        unit_of_measurement: "W"
-        device_class: power
-        value_template: "{{ max(0, states('sensor.battery_charge_discharge_power') | float(0)) }}"
 
-      battery_discharge_only:
-        friendly_name: "Battery Discharge Only"
-        unit_of_measurement: "W"
-        device_class: power
-        value_template: "{{ -min(0, states('sensor.battery_charge_discharge_power') | float(0)) }}"
+  ###########################################################################
+  # GRID IMPORT STATISTICS
+  ###########################################################################
 
-      input_power_with_efficiency_loss:
-        friendly_name: "Input Power with Efficiency Loss"
-        unique_id: "input_power_with_efficiency_loss"
-        unit_of_measurement: "W"
-        device_class: power
-        value_template: >-
-          {% set inverter_rating = 10000 %}
-          {% set inpower = states('sensor.inverter_input_power')|float(0) %}
-          {% if inpower < (inverter_rating*0.1) %}
-            {{ inpower * 0.90 }}
-          {% elif inpower < (inverter_rating*0.2) %}
-            {{ inpower * 0.95 }}
-          {% else %}
-            {{ inpower * 0.98 }}
-          {% endif %}
+  # Mean filtered grid-import power during the last 48 hours.
+  #
+  # The result is expressed in watts because the source is a power sensor.
+  - platform: statistics
+    name: "48h Average Grid Import Power"
+    unique_id: grid_import_power_48h_avg
+    entity_id: sensor.filtered_grid_import_power
+    state_characteristic: mean
 
-      energy_pv:
-        friendly_name: "PV Energy"
-        unique_id: "PV_Energy"
-        device_class: energy
-        unit_of_measurement: "kWh"
-        value_template: >
-          {{ (states('sensor.inverter_total_yield') | float(0)) - (states('sensor.battery_total_discharge') | float(0)) + (states('sensor.battery_total_charge') | float(0)) }}
-
-      energy_pv_daily:
-        friendly_name: "PV Energy Daily"
-        unique_id: "PV_Energy_daily"
-        device_class: energy
-        unit_of_measurement: "kWh"
-        value_template: >
-          {{ (states('sensor.inverter_daily_yield') | float(0)) - (states('sensor.battery_day_discharge') | float(0)) + (states('sensor.battery_day_charge') | float(0)) }}
-
-      house_consumption_power:
-        friendly_name: "House Consumption - Power"
-        unique_id: house_consumption_power
-        unit_of_measurement: "W"
-        availability_template: >
-          {{ states('sensor.inverter_active_power') | is_number and states('sensor.power_meter_active_power') | is_number }}
-        value_template: >
-          {% set inverters_power = states('sensor.inverter_active_power') | float(default=0) %}
-          {% set power_meter_power = states('sensor.power_meter_active_power') | float(default=0) %}
-          {{ max(0, (inverters_power - power_meter_power)) }}
-
-      grid_to_battery:
-        unique_id: grid_to_battery
-        device_class: power
-        unit_of_measurement: "W"
-        value_template: >
-          {% set grid_import = max(0, -1 * (states('sensor.power_meter_active_power') | float(0))) %}
-          {% set battery_charging = states('sensor.battery_charge_only') | float(0) %}
-          {{ min(grid_import, battery_charging) | round(0) }}
-
-      grid_to_house:
-        unique_id: grid_to_house
-        device_class: power
-        unit_of_measurement: "W"
-        value_template: >
-          {% set grid_import = max(0, -1 * (states('sensor.power_meter_active_power') | float(0))) %}
-          {% set grid_to_battery_power = states('sensor.grid_to_battery') | float(0) %}
-          {{ max(0, grid_import - grid_to_battery_power) | round(0) }}
-
-      solar_to_battery:
-        unique_id: solar_to_battery
-        device_class: power
-        unit_of_measurement: "W"
-        value_template: >
-          {% set battery_charging = states('sensor.battery_charge_only') | float(0) %}
-          {% set grid_to_battery_power = states('sensor.grid_to_battery') | float(0) %}
-          {{ max(0, battery_charging - grid_to_battery_power) | round(0) }}
-
-      solar_to_house:
-        unique_id: solar_to_house
-        device_class: power
-        unit_of_measurement: "W"
-        value_template: >
-          {% set inverter_ac_output = max(0, states('sensor.inverter_active_power') | float(0)) %}
-          {% set solar_to_battery_power = states('sensor.solar_to_battery') | float(0) %}
-          {% set solar_to_grid_power = states('sensor.solar_to_grid') | float(0) %}
-          {{ max(0, inverter_ac_output - solar_to_battery_power - solar_to_grid_power) | round(0) }}
-
-      solar_power_consumed:
-        friendly_name: "Solar Power Consumed"
-        unique_id: "solar_power_consumed"
-        unit_of_measurement: "W"
-        value_template: >
-          {{ (states('sensor.solar_to_house') | float(0) + states('sensor.battery_to_house') | float(0)) | round(0) }}
-        availability_template: >
-          {{ states('sensor.solar_to_house') | float(default=0) is not none and states('sensor.battery_to_house') | float(default=0) is not none }}
-
-      solar_to_grid:
-        unique_id: solar_to_grid
-        device_class: power
-        unit_of_measurement: "W"
-        value_template: >
-          {% set inverter_ac_output = max(0, states('sensor.inverter_active_power') | float(0)) %}
-          {% set grid_export = max(0, states('sensor.power_meter_active_power') | float(0)) %}
-          {{ min(inverter_ac_output, grid_export) | round(0) }}
-
-      battery_to_grid:
-        unique_id: battery_to_grid
-        device_class: power
-        unit_of_measurement: "W"
-        value_template: >
-          {% set grid_export = max(0, states('sensor.power_meter_active_power') | float(0)) %}
-          {% set solar_to_grid_power = states('sensor.solar_to_grid') | float(0) %}
-          {% set battery_discharge = states('sensor.battery_discharge_only') | float(0) %}
-          {% set non_solar_export_total = max(0, grid_export - solar_to_grid_power) %}
-          {{ min(battery_discharge, non_solar_export_total) | round(0) }}
-
-      battery_to_house:
-        unique_id: battery_to_house
-        device_class: power
-        unit_of_measurement: "W"
-        value_template: >
-          {% set battery_discharge = states('sensor.battery_discharge_only') | float(0) %}
-          {% set battery_to_grid_power = states('sensor.battery_to_grid') | float(0) %}
-          {{ max(0, battery_discharge - battery_to_grid_power) | round(0) }}
-
-      battery_status:
-        friendly_name: "Battery Status"
-        value_template: >
-          {% set charge_discharge_power = states('sensor.battery_charge_discharge_power') | float(default=0) %}
-          {% if charge_discharge_power > 0.1 %}
-            Charging
-          {% elif charge_discharge_power < -0.1 %}
-            Discharging
-          {% else %}
-            Idle
-          {% endif %}
-
-      house_power_from_grid_w:
-        unique_id: house_power_from_grid_w
-        friendly_name: "House Power Consumption from Grid"
-        unit_of_measurement: "W"
-        value_template: >
-          {% set grid_import_power = states('sensor.power_meter_active_power') | float(0) %}
-          {{ max(0, -grid_import_power) | round(0) }}
-
-      house_power_from_solar_w:
-        unique_id: house_power_from_solar_w
-        friendly_name: "House Power Consumption from Solar (Raw PV Input)"
-        unit_of_measurement: "W"
-        value_template: >
-          {% set inv_power = states('sensor.inverter_input_power') | float(0) %}
-          {{ max(0, inv_power) | round(0) }}
-          
-################################################################################
-#  END OF PACKAGE FILE
-################################################################################
+    max_age:
+      hours: 48
