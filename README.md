@@ -1,6 +1,6 @@
 # Predbat Setup in Home Assistant
 
-## Huawei Solar, Nordpool, Solcast, go-eCharger and Home Assistant Automations
+## Huawei Solar, Nordpool, Forecast.Solar, Open-Meteo, go-eCharger and Home Assistant Automations
 
 ## Overview
 
@@ -87,9 +87,11 @@ The setup uses Predbat inverter type:
 inverter_type: "HU"
 ```
 
+The tested installation uses the Huawei inverter operating mode **Maximise self-consumption**. Other Huawei systems may require different settings depending on inverter model, firmware and integration configuration.
+
 ### Battery
 
-My battery is a Huawei LUNA battery with approximately 10 kWh capacity.
+My battery is a Huawei LUNA battery with approximately 10 kWh nominal capacity.
 
 I currently use:
 
@@ -173,7 +175,7 @@ discharge_stop_service:
   device_id: YOUR_HUAWEI_DEVICE_ID
 ```
 
-In my installation, the Huawei `device_id` must be included directly in each service block. Using `!secret` or a separate `device_id` list did not work reliably in my Predbat configuration.
+The Huawei `device_id` must be included in each service block. It may be entered directly or referenced through AppDaemon secrets if secrets are configured correctly.
 
 ---
 
@@ -477,14 +479,28 @@ content: |
 
 ## Machine Learning, Watch List and Database
 
-The current setup enables ML load prediction and uses the ML output directly:
+Predbat includes an optional machine-learning load predictor.
+
+For a new installation, it can be useful to enable the ML component first without immediately using its predictions for battery planning:
 
 ```yaml
 battery_scaling_auto: true
 load_ml_enable: true
-load_ml_source: true
+load_ml_source: false
 temperature_enable: true
 ```
+
+With this configuration, Predbat collects historical data, trains the model and exposes the ML forecast, but continues to use the normal load forecast for battery planning.
+
+The ML model requires at least one day of historical data before initial training. Seven or more days are recommended for a more useful forecast.
+
+After the model has collected enough history and the predictions appear stable and reasonable, enable the ML forecast as the planning source:
+
+```yaml
+load_ml_source: true
+```
+
+Predbat normally fetches up to 28 days of available Home Assistant history and can accumulate a longer local history in its ML database.
 
 The watch list is configured as:
 
@@ -539,23 +555,25 @@ For anyone trying something similar:
 
 1. Install Predbat using the official instructions.
 2. Verify all Huawei Solar entities in Home Assistant.
-3. Start with Predbat in monitor/read-only mode.
-4. Test Huawei service calls manually:
-
+3. Start with Predbat in Monitor or Read Only mode.
+4. Enable `load_ml_enable: true`, but initially keep `load_ml_source: false` so the ML model can collect history and be evaluated without affecting battery planning.
+5. Allow at least one day of history for initial ML training; seven or more days are recommended.
+6. Test the Huawei service calls manually:
    * `forcible_charge_soc`
    * `forcible_discharge_soc`
    * `stop_forcible_charge`
-5. Confirm the battery power sign.
-6. Start with low charge/discharge power limits.
-7. Only enable active control once the plan and service calls look correct.
-8. Leave freeze modes disabled until basic control is stable.
+7. Confirm the battery power sign.
+8. Start with low charge and discharge power limits.
+9. Enable active control only after the plan and service calls behave correctly.
+10. Enable `load_ml_source: true` only after the ML forecast appears stable and reasonable.
+11. Leave freeze modes disabled until basic control is stable.
 
 ---
 
 ## Resources
 
 * [Predbat GitHub Repository](https://github.com/springfall2008/batpred)
-* [Predbat Documentation](https://https://springfall2008.github.io/batpred/)
+* [Predbat Documentation](https://springfall2008.github.io/batpred/)
 * [Home Assistant](https://www.home-assistant.io/)
 * [Nordpool Integration](https://github.com/custom-components/nordpool)
 * [Forecast.Solar](https://forecast.solar/)
