@@ -554,8 +554,8 @@ For anyone trying something similar:
 
 ## Resources
 
-* [Predbat GitHub Repository](https://github.com/springfall2008/predbat)
-* [Predbat Documentation](https://springfall2008.github.io/batpred/)
+* [Predbat GitHub Repository](https://github.com/springfall2008/batpred)
+* [Predbat Documentation](https://https://springfall2008.github.io/batpred/)
 * [Home Assistant](https://www.home-assistant.io/)
 * [Nordpool Integration](https://github.com/custom-components/nordpool)
 * [Forecast.Solar](https://forecast.solar/)
