@@ -1,75 +1,242 @@
-alias: Predbat Huawei Smart Charge Limit With P1 Protection 20A
+alias: Predbat Huawei Dynamic Charge Limit With P1 Protection 20A
 description: >-
-  Limits Huawei battery charging during daytime and reduces charge power during
-  high grid load or phase current spikes. Optimized for a 20A main fuse while
-  keeping discharge settings untouched.
+  Dynamically limits Huawei battery charging based on the available grid and
+  phase capacity behind a 20A main fuse. The battery's own charging power is
+  removed from the measured P1 load before the available charging capacity is
+  calculated. Predbat charging is then limited in steps of 4000, 3000, 2000 or
+  1000 W. When full charging capacity is available again, this automation's
+  temporary charge-limit overrides are removed.
 triggers:
-  - trigger: time
-    at: "08:00:00"
-    id: day_start
-  - trigger: time
-    at: "22:00:00"
-    id: night_start
-  - trigger: numeric_state
+  - trigger: time_pattern
+    minutes: /1
+    id: periodic_check
+  - trigger: state
     entity_id:
       - sensor.p1_meter_current_phase_1
       - sensor.p1_meter_current_phase_2
       - sensor.p1_meter_current_phase_3
-    above: 17
-    for: "00:01:00"
-    id: high_phase_current
-  - trigger: numeric_state
-    entity_id: sensor.p1_meter_current
-    above: 17
-    for: "00:01:00"
-    id: high_total_current
-  - trigger: numeric_state
-    entity_id: sensor.p1_meter_power
-    above: 11000
-    for: "00:01:00"
-    id: high_grid_power
-  - trigger: template
-    value_template: |
+      - sensor.p1_meter_current
+      - sensor.p1_meter_power
+    id: p1_changed
+  - trigger: state
+    entity_id: sensor.batteries_charge_discharge_power
+    id: battery_power_changed
+  - trigger: homeassistant
+    event: start
+    id: home_assistant_start
+conditions:
+  - condition: template
+    value_template: |-
       {{
-        states('sensor.p1_meter_current_phase_1') | float(0) < 14 and
-        states('sensor.p1_meter_current_phase_2') | float(0) < 14 and
-        states('sensor.p1_meter_current_phase_3') | float(0) < 14 and
-        states('sensor.p1_meter_current') | float(0) < 14 and
-        states('sensor.p1_meter_power') | float(0) < 7500
+        has_value('sensor.p1_meter_current_phase_1') and
+        has_value('sensor.p1_meter_current_phase_2') and
+        has_value('sensor.p1_meter_current_phase_3') and
+        has_value('sensor.p1_meter_power') and
+        has_value('sensor.batteries_charge_discharge_power')
       }}
-    for: "00:10:00"
-    id: normal_load
-conditions: []
 actions:
+  - variables:
+      phase_1_measured: "{{ states('sensor.p1_meter_current_phase_1') | float(0) }}"
+      phase_2_measured: "{{ states('sensor.p1_meter_current_phase_2') | float(0) }}"
+      phase_3_measured: "{{ states('sensor.p1_meter_current_phase_3') | float(0) }}"
+      grid_power_measured: "{{ states('sensor.p1_meter_power') | float(0) }}"
+      battery_power_raw: "{{ states('sensor.batteries_charge_discharge_power') | float(0) }}"
+      battery_charge_max: 5000
+      target_phase_current: 19.5
+      target_grid_power: 13000
+  - variables:
+      battery_charge_power: |-
+        {{
+          [battery_power_raw | float(0), 0] | max
+        }}
+      grid_import_power: |-
+        {{
+          [grid_power_measured | float(0), 0] | max
+        }}
+      battery_charge_current_per_phase: |-
+        {{
+          (battery_charge_power | float(0)) /
+          (1.732 * 400)
+        }}
+      other_grid_load: |-
+        {{
+          [
+            (grid_import_power | float(0)) -
+            (battery_charge_power | float(0)),
+            0
+          ] | max
+        }}
+  - variables:
+      phase_1_without_battery: |-
+        {{
+          [
+            (phase_1_measured | float(0)) -
+            (battery_charge_current_per_phase | float(0)),
+            0
+          ] | max
+        }}
+      phase_2_without_battery: |-
+        {{
+          [
+            (phase_2_measured | float(0)) -
+            (battery_charge_current_per_phase | float(0)),
+            0
+          ] | max
+        }}
+      phase_3_without_battery: |-
+        {{
+          [
+            (phase_3_measured | float(0)) -
+            (battery_charge_current_per_phase | float(0)),
+            0
+          ] | max
+        }}
+  - variables:
+      available_power_from_grid: |-
+        {{
+          [
+            (target_grid_power | float(0)) -
+            (other_grid_load | float(0)),
+            0
+          ] | max
+        }}
+      available_phase_current: |-
+        {{
+          [
+            [
+              (target_phase_current | float(0)) -
+              (phase_1_without_battery | float(0)),
+
+              (target_phase_current | float(0)) -
+              (phase_2_without_battery | float(0)),
+
+              (target_phase_current | float(0)) -
+              (phase_3_without_battery | float(0))
+            ] | min,
+            0
+          ] | max
+        }}
+  - variables:
+      available_power_from_phases: |-
+        {{
+          (available_phase_current | float(0)) *
+          1.732 * 400
+        }}
+      calculated_charge_capacity: |-
+        {{
+          [
+            battery_charge_max | float(0),
+            available_power_from_grid | float(0),
+            available_power_from_phases | float(0)
+          ] | min
+        }}
+  - variables:
+      desired_charge_limit: >-
+        {% set available = calculated_charge_capacity | float(0) %} {% if
+        available >= 4800 %}
+          5000
+        {% elif available >= 4000 %}
+          4000
+        {% elif available >= 3000 %}
+          3000
+        {% elif available >= 2000 %}
+          2000
+        {% else %}
+          1000
+        {% endif %}
+      current_manual_api: "{{ states('select.predbat_manual_api') }}"
+      current_automation_limit: >-
+        {% set manual = states('select.predbat_manual_api') %} {% if
+        'inverter_limit_charge(0)=1000' in manual %}
+          1000
+        {% elif 'inverter_limit_charge(0)=2000' in manual %}
+          2000
+        {% elif 'inverter_limit_charge(0)=3000' in manual %}
+          3000
+        {% elif 'inverter_limit_charge(0)=4000' in manual %}
+          4000
+        {% else %}
+          5000
+        {% endif %}
+  - condition: template
+    value_template: |-
+      {{
+        desired_charge_limit | int(5000) !=
+        current_automation_limit | int(5000)
+      }}
   - choose:
       - conditions:
-          - condition: trigger
-            id: day_start
+          - condition: template
+            value_template: "{{ desired_charge_limit | int(5000) == 5000 }}"
         sequence:
           - action: select.select_option
             target:
               entity_id: select.predbat_manual_api
             data:
-              option: "[inverter_limit_charge(0)=1000]"
+              option: "[inverter_limit_charge(0)=4000]"
           - action: select.select_option
             target:
               entity_id: select.predbat_manual_api
             data:
-              option: "[inverter_limit_charge(0)=0]"
+              option: "[inverter_limit_charge(0)=3000]"
+          - action: select.select_option
+            target:
+              entity_id: select.predbat_manual_api
+            data:
+              option: "[inverter_limit_charge(0)=2000]"
+          - action: select.select_option
+            target:
+              entity_id: select.predbat_manual_api
+            data:
+              option: "[inverter_limit_charge(0)=1000]"
+        note: >-
+          Full charging capacity is available. The battery's own charging load
+          has been removed from the P1 measurements and the remaining household
+          load leaves enough capacity for normal Predbat charging. Temporary
+          limits managed by this automation are removed.
+      - conditions:
+          - condition: template
+            value_template: "{{ desired_charge_limit | int(5000) == 4000 }}"
+        sequence:
+          - action: select.select_option
+            target:
+              entity_id: select.predbat_manual_api
+            data:
+              option: "[inverter_limit_charge(0)=3000]"
+          - action: select.select_option
+            target:
+              entity_id: select.predbat_manual_api
+            data:
+              option: "[inverter_limit_charge(0)=2000]"
+          - action: select.select_option
+            target:
+              entity_id: select.predbat_manual_api
+            data:
+              option: "[inverter_limit_charge(0)=1000]"
           - action: select.select_option
             target:
               entity_id: select.predbat_manual_api
             data:
               option: inverter_limit_charge(0)=4000
+        note: >-
+          Light charging reduction. After subtracting the battery's current
+          charging load, the remaining household load allows approximately 4000
+          W of battery charging without exceeding the configured phase or total
+          grid limits.
       - conditions:
-          - condition: trigger
-            id: night_start
+          - condition: template
+            value_template: "{{ desired_charge_limit | int(5000) == 3000 }}"
         sequence:
           - action: select.select_option
             target:
               entity_id: select.predbat_manual_api
             data:
-              option: "[inverter_limit_charge(0)=0]"
+              option: "[inverter_limit_charge(0)=4000]"
+          - action: select.select_option
+            target:
+              entity_id: select.predbat_manual_api
+            data:
+              option: "[inverter_limit_charge(0)=2000]"
           - action: select.select_option
             target:
               entity_id: select.predbat_manual_api
@@ -79,13 +246,14 @@ actions:
             target:
               entity_id: select.predbat_manual_api
             data:
-              option: "[inverter_limit_charge(0)=4000]"
+              option: inverter_limit_charge(0)=3000
+        note: >-
+          Medium charging reduction. Car charging, cooking, heating, washing or
+          other household load has reduced the available capacity. Huawei
+          battery charging is temporarily limited to 3000 W.
       - conditions:
-          - condition: trigger
-            id:
-              - high_phase_current
-              - high_total_current
-              - high_grid_power
+          - condition: template
+            value_template: "{{ desired_charge_limit | int(5000) == 2000 }}"
         sequence:
           - action: select.select_option
             target:
@@ -96,41 +264,48 @@ actions:
             target:
               entity_id: select.predbat_manual_api
             data:
-              option: "[inverter_limit_charge(0)=0]"
+              option: "[inverter_limit_charge(0)=3000]"
+          - action: select.select_option
+            target:
+              entity_id: select.predbat_manual_api
+            data:
+              option: "[inverter_limit_charge(0)=1000]"
+          - action: select.select_option
+            target:
+              entity_id: select.predbat_manual_api
+            data:
+              option: inverter_limit_charge(0)=2000
+        note: >-
+          Strong charging reduction. Only around 2000 W of battery charging
+          capacity remains after accounting for the non-battery household load
+          and the most heavily loaded phase.
+      - conditions:
+          - condition: template
+            value_template: "{{ desired_charge_limit | int(5000) == 1000 }}"
+        sequence:
+          - action: select.select_option
+            target:
+              entity_id: select.predbat_manual_api
+            data:
+              option: "[inverter_limit_charge(0)=4000]"
+          - action: select.select_option
+            target:
+              entity_id: select.predbat_manual_api
+            data:
+              option: "[inverter_limit_charge(0)=3000]"
+          - action: select.select_option
+            target:
+              entity_id: select.predbat_manual_api
+            data:
+              option: "[inverter_limit_charge(0)=2000]"
           - action: select.select_option
             target:
               entity_id: select.predbat_manual_api
             data:
               option: inverter_limit_charge(0)=1000
-      - conditions:
-          - condition: trigger
-            id: normal_load
-        sequence:
-          - action: select.select_option
-            target:
-              entity_id: select.predbat_manual_api
-            data:
-              option: "[inverter_limit_charge(0)=1000]"
-          - action: select.select_option
-            target:
-              entity_id: select.predbat_manual_api
-            data:
-              option: "[inverter_limit_charge(0)=0]"
-          - choose:
-              - conditions:
-                  - condition: time
-                    after: "06:00:00"
-                    before: "22:00:00"
-                sequence:
-                  - action: select.select_option
-                    target:
-                      entity_id: select.predbat_manual_api
-                    data:
-                      option: inverter_limit_charge(0)=4000
-            default:
-              - action: select.select_option
-                target:
-                  entity_id: select.predbat_manual_api
-                data:
-                  option: "[inverter_limit_charge(0)=4000]"
+        note: >-
+          Maximum normal charging reduction. Less than 2000 W of calculated
+          charging capacity remains. Huawei battery charging is limited to 1000
+          W to leave as much available capacity as possible for the house, car,
+          heating and other electrical loads.
 mode: restart
