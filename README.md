@@ -4,7 +4,7 @@
 
 ## Overview
 
-This repository documents my personal Home Assistant setup for using **[Predbat](https://github.com/springfall2008/predbat)** with a Huawei inverter, Huawei battery, Nordpool electricity prices, Solcast solar forecasts and a go-eCharger EV charger.
+This repository documents my personal Home Assistant setup for using **[Predbat](https://github.com/springfall2008/predbat)** with a Huawei inverter, Huawei battery, Nordpool electricity prices, Forecast.Solar forecasts with Open-Meteo backup and a go-eCharger EV charger.
 
 **Predbat** is a Home Assistant/AppDaemon-based tool that predicts and optimizes home battery charging and discharging based on electricity prices, solar forecasts, household load and other energy data.
 
@@ -89,19 +89,22 @@ inverter_type: "HU"
 
 ### Battery
 
-My battery is a Huawei battery with approximately 10 kWh usable capacity.
+My battery is a Huawei LUNA battery with approximately 10 kWh capacity.
 
 I currently use:
 
 ```yaml
+soc_max:
+  - 10
+
 reserve:
-  - 12
+  - 5
 
 battery_min_soc:
-  - 12
+  - number.batteries_end_of_discharge_soc
 ```
 
-This means Predbat should plan around 12% as the minimum battery reserve.
+The normal reserve is 5%, while the absolute minimum SoC follows the Huawei end-of-discharge entity.
 
 ### Nordpool
 
@@ -109,11 +112,9 @@ Nordpool electricity prices are used for import and export price optimization.
 
 Predbat receives import and export price data through Home Assistant sensors.
 
-### Solcast
+### Solar forecast
 
-Solcast is used for solar production forecasts.
-
-Predbat uses the solar forecast to decide when to charge, discharge, export or preserve battery energy.
+Forecast.Solar is used as the primary solar forecast, with Open-Meteo configured as a backup. Predbat uses the forecast to decide when to charge, discharge, export or preserve battery energy.
 
 ### go-eCharger
 
@@ -176,6 +177,35 @@ In my installation, the Huawei `device_id` must be included directly in each ser
 
 ---
 
+## Solar Forecast
+
+The current setup uses Forecast.Solar with Open-Meteo backup:
+
+```yaml
+forecast_solar:
+  - latitude: !secret predbat_home_latitude
+    longitude: !secret predbat_home_longitude
+    kwp: 10.5
+    azimuth: 132
+    declination: 18
+    efficiency: 0.95
+
+forecast_solar_open_meteo_backup: true
+
+open_meteo_forecast:
+  - latitude: !secret predbat_home_latitude
+    longitude: !secret predbat_home_longitude
+    kwp: 10.5
+    azimuth: 132
+    declination: 18
+
+open_meteo_forecast_max_age: 2.0
+```
+
+The azimuth convention is North `0`, East `-90`, South `±180`, West `+90`.
+
+---
+
 ## Battery Power Sign Convention
 
 In my Huawei setup, the raw Huawei battery power sensor has the opposite sign compared to what Predbat expects.
@@ -228,7 +258,15 @@ Potential Huawei mapping:
 | Freeze export        | Set maximum charging power to `0 W`              |
 | Demand               | Restore charge/discharge limits to normal values |
 
-For now, I have chosen to keep freeze modes disabled until the basic Huawei control has been tested over time.
+Freeze capability is currently disabled in the inverter override until the Huawei behaviour has been tested more thoroughly.
+
+Current configuration:
+
+```yaml
+inverter:
+  support_charge_freeze: false
+  support_discharge_freeze: false
+```
 
 Recommended starting point:
 
@@ -437,6 +475,39 @@ content: |
 
 ---
 
+## Machine Learning, Watch List and Database
+
+The current setup enables ML load prediction and uses the ML output directly:
+
+```yaml
+battery_scaling_auto: true
+load_ml_enable: true
+load_ml_source: true
+temperature_enable: true
+```
+
+The watch list is configured as:
+
+```yaml
+watch_list:
+  - '+[car_charging_soc]'
+  - '+[car_charging_now]'
+  - '{metric_octopus_import}'
+  - '{metric_octopus_export}'
+```
+
+List-based configuration items use `+[name]`; single-value items use `{name}`.
+
+Predbat database settings:
+
+```yaml
+db_enable: true
+db_days: 30
+db_mirror_ha: true
+```
+
+---
+
 ## Current Status
 
 ### Working / Tested in My Setup
@@ -487,7 +558,7 @@ For anyone trying something similar:
 * [Predbat Documentation](https://springfall2008.github.io/batpred/)
 * [Home Assistant](https://www.home-assistant.io/)
 * [Nordpool Integration](https://github.com/custom-components/nordpool)
-* [Solcast Integration](https://github.com/dannerph/home_assistant_solcast_solar)
+* [Forecast.Solar](https://forecast.solar/)
 * [Huawei Solar Home Assistant Integration](https://github.com/wlcrs/huawei_solar)
 * [go-eCharger](https://github.com/goecharger/go-eCharger-API-v2)
 
